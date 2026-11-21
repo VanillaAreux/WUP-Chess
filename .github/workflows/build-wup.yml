@@ -34,7 +34,7 @@ jobs:
         run: |
           gcc -std=c11 -O2 chess.c test_chess.c -o /tmp/test_chess
           /tmp/test_chess
-          gcc -std=c11 -O2 chess.c ai.c test_ai.c -o /tmp/test_ai
+          gcc -D_POSIX_C_SOURCE=200809L -std=c11 -O2 chess.c ai.c test_ai.c -o /tmp/test_ai
           /tmp/test_ai
           gcc -std=c11 -O2 rlink.c test_link.c -o /tmp/test_link
           /tmp/test_link
