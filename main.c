@@ -398,32 +398,7 @@ static void draw_lobby(void) {
     btn_add(327, 400, 200, 52, A_BACK, "Back");
     btn_draw_all();
 }
-/* The LCD scans the live framebuffer continuously. Wait for vertical blank before
- * copying a completed off-screen frame into it, so a move cannot expose a half-copied
- * board to the display. The timer bound prevents a bad counter read from hanging the app. */
-static void wait_vblank(void) {
-#ifndef HOST_TEST
-    volatile uint32_t *vcount = (volatile uint32_t *)0xf00094c8u;
-    volatile uint32_t *timer = (volatile uint32_t *)0xf0000408u;
-    uint32_t start = *timer;
-    while ((*vcount & 0x7ffu) < 488u && (uint32_t)(*timer - start) < 25000u) { }
-#endif
-}
-
-static void present_backbuffer(void) {
-#ifndef HOST_TEST
-    cache_clean(back, (uint32_t)(GFX_W * GFX_H * sizeof(px_t)));
-    wait_vblank();
-    *(volatile uint32_t *)0xf0009474u = (uint32_t)back; /* LCD UI-layer framebuffer address */
-    px_t *old_front = front; front = back; back = old_front;
-    if (gfx_present_hook) gfx_present_hook();
-#else
-    gfx_target_screen();
-    gfx_copy(gfx_fb(), back, GFX_W * GFX_H);
-    gfx_present_all();
-#endif
-}
-
+/* Game redraws use the SDK's existing screen framebuffer and regional present API. */
 static void draw_game_partial(void) {
     /* The board and side panel are independent regions. Repaint only those regions;
        keep the rest of the LCD framebuffer untouched to avoid a full-screen flash. */
