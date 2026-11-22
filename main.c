@@ -1,7 +1,6 @@
 /* WUP Chess: chess for the Wii U GamePad (libwup). Play on one pad, or against another GamePad over Wi-Fi.
  * Touch only: tap a piece and then its square. */
 #include "wup.h"
-#include "armcpu.h"
 #include "chess.h"
 #include "rlink.h"
 #include "wifi.h"
@@ -47,7 +46,7 @@ static wifi_host_t found[WIFI_MAX_HOSTS]; static int nfound;
 
 /* Two framebuffers: draw into the hidden one, clean its cache, then switch the LCD layer address
  * during vertical blank. This avoids copying a full frame while the LCD is scanning it. */
-static px_t *back, *front;
+static int game_partial_ready;
 
 /* ---------- colours ---------- */
 #define C_BG_TOP C24(28, 34, 52)
@@ -94,11 +93,12 @@ static int xy_sq(int x, int y) {
 static void set_note(const char *s) { strncpy(note, s, sizeof note - 1); note[sizeof note - 1] = 0; note_until = now_ms() + 4000; dirty = 1; }
 
 static void new_game(void) {
+    game_partial_ready = 0;
     chess_init(&pos); sel = -1; nlm = 0; nply = 0; game_over = 0; result[0] = 0; dlg = D_NONE;
     last_from = last_to = -1; draw_out = rematch_me = rematch_peer = 0; cpu_wait = 0;
     game_t0 = now_ms(); screen = S_GAME; dirty = 1;
 }
-static void end_game(const char *s) { game_over = 1; strncpy(result, s, sizeof result - 1); result[sizeof result - 1] = 0; sel = -1; nlm = 0; dlg = D_NONE; dirty = 1; }
+static void end_game(const char *s) { game_partial_ready = 0; game_over = 1; strncpy(result, s, sizeof result - 1); result[sizeof result - 1] = 0; sel = -1; nlm = 0; dlg = D_NONE; dirty = 1; }
 static void check_end(void) {
     int st = chess_status(&pos); if (!st) return;
     if (st == ST_CHECKMATE) {
@@ -424,12 +424,36 @@ static void present_backbuffer(void) {
 #endif
 }
 
+static void draw_game_partial(void) {
+    /* The board and side panel are independent regions. Repaint only those regions;
+       keep the rest of the LCD framebuffer untouched to avoid a full-screen flash. */
+    draw_board();
+    gfx_vgrad24(PX - 10, 0, GFX_W - (PX - 10), GFX_H, C_BG_TOP, C_BG_BOT);
+    draw_game_panel();
+    btn_reset();
+    if (game_over) {
+        btn_add(PX, 345, 166, 44, A_REMATCH, rematch_me ? "Waiting..." : vs_cpu ? "Play again" : "Rematch");
+        btn_add(PX + 182, 345, 166, 44, A_MENU, "Menu");
+    } else {
+        btn_add(PX, 345, 166, 44, A_RESIGN, "Resign");
+        btn_add(PX + 182, 345, 166, 44, A_DRAW, online ? "Offer draw" : "Draw");
+        btn_add(PX, 399, 166, 44, A_MENU, "Menu");
+    }
+    btn_draw_all();
+}
 static void redraw(void) {
-    if (back) gfx_target(back, GFX_W, GFX_H);
-    else gfx_target_screen();
-    if (screen == S_MENU) draw_menu(); else if (screen == S_LEVEL) draw_level(); else if (screen == S_GAME) draw_game(); else draw_lobby();
-    if (back) present_backbuffer();
-    else gfx_present_all();
+    gfx_target_screen();
+    if (screen == S_GAME && dlg == D_NONE && game_partial_ready) {
+        draw_game_partial();
+        gfx_present(BX, BY, GFX_W - BX, GFX_H - BY);
+    } else {
+        if (screen == S_MENU) draw_menu();
+        else if (screen == S_LEVEL) draw_level();
+        else if (screen == S_GAME) draw_game();
+        else draw_lobby();
+        gfx_present_all();
+        game_partial_ready = (screen == S_GAME && dlg == D_NONE);
+    }
     dirty = 0;
 }
 
@@ -450,8 +474,6 @@ static void on_tap(int x, int y) {
 
 int main(void) {
     wup_screen(); lastus = wup_us(); ai_clock_ms = now_ms; ai_yield = ai_nap;
-    front = gfx_fb();
-    back = (px_t *)malloc((size_t)GFX_W * GFX_H * sizeof(px_t));      /* NULL: fall back to direct drawing */
     uint32_t last_anim = 0;
     while (!quit_app) {
         uint32_t now = now_ms();
