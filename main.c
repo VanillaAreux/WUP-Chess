@@ -1,6 +1,7 @@
 /* WUP Chess: chess for the Wii U GamePad (libwup). Play on one pad, or against another GamePad over Wi-Fi.
  * Touch only: tap a piece and then its square. */
 #include "wup.h"
+#include "armcpu.h"
 #include "chess.h"
 #include "rlink.h"
 #include "wifi.h"
@@ -44,10 +45,9 @@ static void ai_nap(void) { wup_sleep(1); }
 static wifi_t wifi; static rlink_t rl; static int wifi_up;
 static wifi_host_t found[WIFI_MAX_HOSTS]; static int nfound;
 
-/* Off-screen frame: the pad has a single framebuffer that the LCD scans while we draw, so drawing
- * straight into it shows half-drawn frames (flicker). Everything is drawn here and copied over in one go.
- * If the memory is not there, drawing goes straight to the screen as before. */
-static px_t *back;
+/* Two framebuffers: draw into the hidden one, clean its cache, then switch the LCD layer address
+ * during vertical blank. This avoids copying a full frame while the LCD is scanning it. */
+static px_t *back, *front;
 
 /* ---------- colours ---------- */
 #define C_BG_TOP C24(28, 34, 52)
@@ -410,11 +410,27 @@ static void wait_vblank(void) {
 #endif
 }
 
+static void present_backbuffer(void) {
+#ifndef HOST_TEST
+    cache_clean(back, (uint32_t)(GFX_W * GFX_H * sizeof(px_t)));
+    wait_vblank();
+    *(volatile uint32_t *)0xf0009474u = (uint32_t)back; /* LCD UI-layer framebuffer address */
+    px_t *old_front = front; front = back; back = old_front;
+    if (gfx_present_hook) gfx_present_hook();
+#else
+    gfx_target_screen();
+    gfx_copy(gfx_fb(), back, GFX_W * GFX_H);
+    gfx_present_all();
+#endif
+}
+
 static void redraw(void) {
-    if (back) gfx_target(back, GFX_W, GFX_H);       /* draw off-screen ... */
+    if (back) gfx_target(back, GFX_W, GFX_H);
+    else gfx_target_screen();
     if (screen == S_MENU) draw_menu(); else if (screen == S_LEVEL) draw_level(); else if (screen == S_GAME) draw_game(); else draw_lobby();
-    if (back) { wait_vblank(); gfx_target_screen(); gfx_copy(gfx_fb(), back, GFX_W * GFX_H); }   /* copy only during LCD blanking */
-    gfx_present_all(); dirty = 0;
+    if (back) present_backbuffer();
+    else gfx_present_all();
+    dirty = 0;
 }
 
 /* ---------- input (touch only) ---------- */
@@ -434,6 +450,7 @@ static void on_tap(int x, int y) {
 
 int main(void) {
     wup_screen(); lastus = wup_us(); ai_clock_ms = now_ms; ai_yield = ai_nap;
+    front = gfx_fb();
     back = (px_t *)malloc((size_t)GFX_W * GFX_H * sizeof(px_t));      /* NULL: fall back to direct drawing */
     uint32_t last_anim = 0;
     while (!quit_app) {
